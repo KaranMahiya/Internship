@@ -1,83 +1,79 @@
-import socket
-import threading
+from flask import Flask, request, jsonify # type: ignore
 import time
-import json
+import threading
+import os
 
-HOST = "0.0.0.0"
-PORT = 5000
+app = Flask(__name__)
 
-server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-server.bind((HOST, PORT))
-
-clients = {}  # {client_id: (ip, port, last_seen)}
+clients = {}
 
 TIMEOUT = 30  # seconds
-
 
 def cleanup_clients():
     while True:
         now = time.time()
         to_delete = []
-        for cid, (ip, port, last_seen) in clients.items():
-            if now - last_seen > TIMEOUT:
+
+        for cid in clients:
+            if now - clients[cid]["last_seen"] > TIMEOUT:
                 to_delete.append(cid)
 
         for cid in to_delete:
-            print(f"[CLEANUP] Removing inactive client {cid}")
+            print(f"[CLEANUP] Removing {cid}")
             del clients[cid]
 
         time.sleep(5)
 
+@app.route("/register", methods=["POST"])
+def register():
+    data = request.json
+    client_id = data["id"]
+    ip = request.remote_addr
 
-def handle_message(data, addr):
-    try:
-        msg = json.loads(data.decode())
-        msg_type = msg.get("type")
+    clients[client_id] = {
+        "ip": ip,
+        "last_seen": time.time()
+    }
 
-        if msg_type == "register":
-            client_id = msg["id"]
-            clients[client_id] = (addr[0], addr[1], time.time())
-            print(f"[REGISTER] {client_id} -> {addr}")
+    print(f"[REGISTER] {client_id} -> {ip}")
+    return jsonify({"status": "registered"})
 
-        elif msg_type == "heartbeat":
-            client_id = msg["id"]
-            if client_id in clients:
-                ip, port, _ = clients[client_id]
-                clients[client_id] = (ip, port, time.time())
-                print(f"[HEARTBEAT] {client_id}")
+@app.route("/heartbeat", methods=["POST"])
+def heartbeat():
+    data = request.json
+    client_id = data["id"]
 
-        elif msg_type == "send":
-            target = msg["to"]
-            sender = msg["from"]
-            message = msg["message"]
+    if client_id in clients:
+        clients[client_id]["last_seen"] = time.time()
+        return jsonify({"status": "alive"})
 
-            if target in clients:
-                target_addr = (clients[target][0], clients[target][1])
+    return jsonify({"error": "not registered"}), 400
 
-                forward_msg = {
-                    "type": "message",
-                    "from": sender,
-                    "message": message
-                }
+@app.route("/send", methods=["POST"])
+def send_message():
+    data = request.json
+    sender = data["from"]
+    target = data["to"]
+    message = data["message"]
 
-                server.sendto(json.dumps(forward_msg).encode(), target_addr)
-                print(f"[ROUTE] {sender} -> {target}")
+    if target not in clients:
+        return jsonify({"error": "target not found"}), 404
 
-            else:
-                print(f"[ERROR] Target {target} not found")
+    print(f"[ROUTE] {sender} -> {target}")
 
-    except Exception as e:
-        print("[ERROR]", e)
+    return jsonify({
+        "from": sender,
+        "to": target,
+        "message": message
+    })
 
-
-def start_server():
-    print(f"Server running on {HOST}:{PORT}")
-    threading.Thread(target=cleanup_clients, daemon=True).start()
-
-    while True:
-        data, addr = server.recvfrom(1024)
-        threading.Thread(target=handle_message, args=(data, addr)).start()
+@app.route("/healthz")
+def health():
+    return "OK", 200
 
 
 if __name__ == "__main__":
-    start_server()
+    threading.Thread(target=cleanup_clients, daemon=True).start()
+
+    port = int(os.environ.get("PORT", 10000))  # 🔥 FIX
+    app.run(host="0.0.0.0", port=port)
