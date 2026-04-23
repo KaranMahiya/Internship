@@ -77,3 +77,7 @@ if __name__ == "__main__":
 
     port = int(os.environ.get("PORT", 10000))  # 🔥 FIX
     app.run(host="0.0.0.0", port=port)
+
+@app.route("/")
+def home():
+    return "Server is running 🚀"
